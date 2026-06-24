@@ -2,54 +2,13 @@ import asyncio
 import json
 import random
 import re
-import unicodedata
 from html import unescape
 
 from playwright.async_api import async_playwright
+from pydantic import ValidationError
 
-
-# ──────────────────────────────────────────────
-# LIMPEZA DE DADOS
-# ──────────────────────────────────────────────
-
-_VALORES_VAZIOS = {"n/a", "não informado", "nao informado", "sem informação", ""}
-
-
-def _normalizar_string(texto: str) -> str | None:
-    texto = texto.strip()
-    texto = re.sub(r"[^\S\n]+", " ", texto)
-    texto = "".join(c for c in texto if unicodedata.category(c) != "Cc" or c in "\n\t")
-    return texto or None
-
-
-def _limpar_valor(valor):
-    if isinstance(valor, str):
-        norm = _normalizar_string(valor)
-        if norm is None or norm.lower() in _VALORES_VAZIOS:
-            return None
-        return norm
-    return valor
-
-
-def _limpar_lista(lista: list) -> list:
-    vistos: set = set()
-    resultado = []
-    for item in lista:
-        item_limpo = _limpar_valor(item)
-        if item_limpo is not None and item_limpo not in vistos:
-            vistos.add(item_limpo)
-            resultado.append(item_limpo)
-    return resultado
-
-
-def _limpar_registro(registro: dict) -> dict:
-    limpo = {}
-    for chave, valor in registro.items():
-        if isinstance(valor, list):
-            limpo[chave] = _limpar_lista(valor)
-        else:
-            limpo[chave] = _limpar_valor(valor)
-    return limpo
+# Importa o seu modelo de validação (certifique-se de que schemas.py está na mesma pasta)
+from schemas import ImovelCuritibaSchema
 
 
 # ──────────────────────────────────────────────
@@ -95,14 +54,12 @@ async def extrair_links_da_pagina(page) -> list[str]:
 
 
 # ──────────────────────────────────────────────
-# EXTRAÇÃO DE DADOS DO ANÚNCIO
+# EXTRAÇÃO DE DADOS DO ANÚNCIO (BRUTOS)
 # ──────────────────────────────────────────────
 
 async def extrair_dados_do_anuncio(page, url: str) -> dict:
     await page.goto(url)
 
-    # state="attached": <script type="text/plain"> nunca é "visible" no DOM,
-    # mas está presente — o padrão "visible" causava timeout em 100% dos casos.
     await page.wait_for_selector("#initial-data", state="attached", timeout=15_000)
 
     data_json_str = await page.locator("#initial-data").get_attribute("data-json")
@@ -145,6 +102,7 @@ async def extrair_dados_do_anuncio(page, url: str) -> dict:
         if re_complex_raw else []
     )
 
+    # Retorna o dicionário com os dados em bruto extraídos do HTML
     return {
         "titulo":                  titulo,
         "preco":                   preco,
@@ -172,7 +130,7 @@ async def extrair_dados_do_anuncio(page, url: str) -> dict:
 def _salvar_json(nome_arquivo: str, dados: list) -> None:
     with open(nome_arquivo, "w", encoding="utf-8") as f:
         json.dump(dados, f, ensure_ascii=False, indent=4)
-    print(f"  Salvo: {nome_arquivo}  ({len(dados)} registros)")
+    print(f"  Salvo: {nome_arquivo}  ({len(dados)} registos)")
 
 
 async def rodar_scraper() -> None:
@@ -198,9 +156,10 @@ async def rodar_scraper() -> None:
         todas_urls = list(set(await extrair_links_da_pagina(page)))
         print(f"{len(todas_urls)} URLs encontradas.\n")
 
-        # ── Etapa 2: extrair dados ─────────────────────────────────────────────
+        # ── Etapa 2: extrair e validar dados em memória ────────────────────────
         dados_sucesso: list[dict] = []
         dados_erros:   list[dict] = []
+        itens_ignorados = 0
 
         for i, url in enumerate(todas_urls, 1):
             prefixo = f"[{i}/{len(todas_urls)}]"
@@ -208,13 +167,26 @@ async def rodar_scraper() -> None:
                 if page.is_closed():
                     page = await context.new_page()
 
-                dados = await extrair_dados_do_anuncio(page, url)
-                dados_sucesso.append(dados)
-                print(f"{prefixo} OK  {(dados['titulo'] or url)[:70]}")
+                # Extrai os dados em bruto da página
+                dados_brutos = await extrair_dados_do_anuncio(page, url)
+
+                # --- PIPELINE PYDANTIC (Validação e Filtro) ---
+                try:
+                    imovel_validado = ImovelCuritibaSchema.model_validate(dados_brutos)
+                    dados_sucesso.append(imovel_validado.model_dump())
+                    print(f"{prefixo} OK  {(imovel_validado.titulo)[:70]}")
+                    
+                except (ValueError, ValidationError) as validacao_erro:
+                    # Captura erros de validação (ex: Cidade não é Curitiba)
+                    # Não adiciona aos erros graves, apenas regista como ignorado
+                    msg_erro = str(validacao_erro).split('\n')[0]
+                    itens_ignorados += 1
+                    print(f"{prefixo} IGNORADO (Filtro): {msg_erro[:60]}")
+                # ----------------------------------------------
 
             except Exception as exc:
+                # Captura erros reais do scraper (timeout, seletores, rede)
                 tipo = type(exc).__name__
-                # primeira linha do erro (sem stack trace / call log do Playwright)
                 primeira_linha = str(exc).split("\n")[0]
                 dados_erros.append({"url": url, "erro": primeira_linha})
                 print(f"{prefixo} ERR [{tipo}] {primeira_linha[:80]}")
@@ -227,11 +199,13 @@ async def rodar_scraper() -> None:
 
         await browser.close()
 
-        # ── Etapa 3: limpeza e gravação ────────────────────────────────────────
-        print(f"\nSucesso: {len(dados_sucesso)}  |  Erros: {len(dados_erros)}")
+        # ── Etapa 3: gravação ──────────────────────────────────────────────────
+        print(f"\nFinalizado!")
+        print(f"Sucesso (Curitiba): {len(dados_sucesso)} | Ignorados (Outras Cidades/Dados Inválidos): {itens_ignorados} | Erros Scraper: {len(dados_erros)}")
 
+        # Salva o ficheiro final limpo e validado
         if dados_sucesso:
-            _salvar_json("imoveis_sucesso.json", [_limpar_registro(d) for d in dados_sucesso])
+            _salvar_json("imoveis_curitiba_limpos.json", dados_sucesso)
 
         if dados_erros:
             _salvar_json("imoveis_erros.json", dados_erros)
