@@ -1,13 +1,87 @@
 import asyncio
 import json
+import random
+import re
+import unicodedata
+from html import unescape
+
 from playwright.async_api import async_playwright
 
-async def extrair_links_da_pagina(page):
+
+# ──────────────────────────────────────────────
+# LIMPEZA DE DADOS
+# ──────────────────────────────────────────────
+
+_VALORES_VAZIOS = {"n/a", "não informado", "nao informado", "sem informação", ""}
+
+
+def _normalizar_string(texto: str) -> str | None:
+    texto = texto.strip()
+    texto = re.sub(r"[^\S\n]+", " ", texto)
+    texto = "".join(c for c in texto if unicodedata.category(c) != "Cc" or c in "\n\t")
+    return texto or None
+
+
+def _limpar_valor(valor):
+    if isinstance(valor, str):
+        norm = _normalizar_string(valor)
+        if norm is None or norm.lower() in _VALORES_VAZIOS:
+            return None
+        return norm
+    return valor
+
+
+def _limpar_lista(lista: list) -> list:
+    vistos: set = set()
+    resultado = []
+    for item in lista:
+        item_limpo = _limpar_valor(item)
+        if item_limpo is not None and item_limpo not in vistos:
+            vistos.add(item_limpo)
+            resultado.append(item_limpo)
+    return resultado
+
+
+def _limpar_registro(registro: dict) -> dict:
+    limpo = {}
+    for chave, valor in registro.items():
+        if isinstance(valor, list):
+            limpo[chave] = _limpar_lista(valor)
+        else:
+            limpo[chave] = _limpar_valor(valor)
+    return limpo
+
+
+# ──────────────────────────────────────────────
+# HELPERS DE EXTRAÇÃO
+# ──────────────────────────────────────────────
+
+def _limpar_html_basico(texto) -> str | None:
+    if not texto:
+        return None
+    texto = unescape(texto)
+    texto = re.sub(r"<br\s*/?>", "\n", texto, flags=re.IGNORECASE)
+    texto = re.sub(r"<[^>]+>", "", texto)
+    return texto.strip() or None
+
+
+def _extrair_valor_por_nome(properties, nome_campo):
+    for prop in properties or []:
+        if prop.get("name") == nome_campo:
+            return prop.get("value")
+    return None
+
+
+# ──────────────────────────────────────────────
+# COLETA DE URLs
+# ──────────────────────────────────────────────
+
+async def extrair_links_da_pagina(page) -> list[str]:
     await page.wait_for_selector("main")
     links_locator = page.locator('a[href*="/imoveis/"]')
     elementos = await links_locator.all()
-    urls_encontradas = []
-    
+
+    urls_encontradas: list[str] = []
     for elemento in elementos:
         href = await elemento.get_attribute("href")
         if href:
@@ -19,102 +93,149 @@ async def extrair_links_da_pagina(page):
                 urls_encontradas.append(href)
     return urls_encontradas
 
-async def extrair_dados_do_anuncio(page, url):
+
+# ──────────────────────────────────────────────
+# EXTRAÇÃO DE DADOS DO ANÚNCIO
+# ──────────────────────────────────────────────
+
+async def extrair_dados_do_anuncio(page, url: str) -> dict:
     await page.goto(url)
-    await page.wait_for_selector("#description-title", timeout=15000)
-    
-    titulo_locator = page.locator("#description-title")
-    titulo = (await titulo_locator.inner_text()).strip()
-    
-    desc_locator = page.locator('div[data-section="description"]')
-    descricao = (await desc_locator.inner_text()).strip() if (await desc_locator.count()) > 0 else "N/A"
-    
-    preco_locator = page.locator("#price-box-container p").first
-    preco = (await preco_locator.inner_text()).strip() if (await preco_locator.count()) > 0 else "Preço não informado"
-        
-    condo_locator = page.locator('div:has-text("Condomínio") >> text=/R\$/').last
-    condominio_taxa = (await condo_locator.inner_text()).strip() if (await condo_locator.count()) > 0 else "Não informado"
 
-    loc_container = page.locator("div:has(> svg#building-icon)")
-    bairro, cidade, estado, cep = "N/A", "N/A", "N/A", "N/A"
-    
-    if (await loc_container.count()) > 0:
-        spans_localizacao = await loc_container.locator("span").all()
-        if len(spans_localizacao) >= 1:
-            bairro = (await spans_localizacao[0].inner_text()).strip()
-        if len(spans_localizacao) >= 2:
-            string_localidade = await spans_localizacao[1].inner_text()
-            partes = [p.strip() for p in string_localidade.split(",")]
-            if len(partes) >= 1: cidade = partes[0]
-            if len(partes) >= 2: estado = partes[1]
-            if len(partes) >= 3: cep = partes[2]
+    # state="attached": <script type="text/plain"> nunca é "visible" no DOM,
+    # mas está presente — o padrão "visible" causava timeout em 100% dos casos.
+    await page.wait_for_selector("#initial-data", state="attached", timeout=15_000)
 
-    metragem_locator = page.locator('li:has-text("m²")').first
-    metragem = (await metragem_locator.inner_text()).replace("•", "").strip() if (await metragem_locator.count()) > 0 else "N/A"
+    data_json_str = await page.locator("#initial-data").get_attribute("data-json")
+    if not data_json_str:
+        raise ValueError("data-json ausente em #initial-data")
 
-    quartos_locator = page.locator('li:has-text("Quarto")').first
-    quartos = (await quartos_locator.inner_text()).replace("•", "").strip() if (await quartos_locator.count()) > 0 else "N/A"
+    dados_brutos = json.loads(data_json_str)
+    ad = dados_brutos.get("ad", {}) or {}
 
-    caract_imovel_locator = page.locator('div:has(> span:has-text("Características do imóvel")) >> span[data-ds-component="DS-Badge"]')
-    textos_imovel = await caract_imovel_locator.all_inner_texts()
-    caracteristicas_imovel = [texto.strip() for texto in textos_imovel if "Características" not in texto]
-    
-    caract_condo_locator = page.locator('div:has(> span:has-text("Características do condomínio")) >> span[data-ds-component="DS-Badge"]')
-    textos_condo = await caract_condo_locator.all_inner_texts()
-    caracteristicas_condominio = [texto.strip() for texto in textos_condo if "Características" not in texto]
+    titulo    = _limpar_html_basico(ad.get("subject"))
+    descricao = _limpar_html_basico(ad.get("description") or ad.get("body"))
+    preco     = ad.get("priceValue") or ad.get("price") or None
+
+    properties     = ad.get("properties") or []
+    valor_cond     = _extrair_valor_por_nome(properties, "condominio")
+    valor_iptu     = _extrair_valor_por_nome(properties, "iptu")
+
+    periodo_cond = None
+    for item in ad.get("realEstatePriceInfo") or []:
+        if item.get("name") == "condominio":
+            periodo_cond = item.get("period")
+            break
+
+    if valor_cond:
+        condominio = f"{valor_cond}/{periodo_cond}" if periodo_cond else valor_cond
+    else:
+        condominio = None
+
+    location = ad.get("location") or {}
+
+    re_features_raw = _extrair_valor_por_nome(properties, "re_features")
+    caracteristicas_imovel = (
+        [i.strip() for i in re_features_raw.split(",") if i.strip()]
+        if re_features_raw else []
+    )
+
+    re_complex_raw = _extrair_valor_por_nome(properties, "re_complex_features")
+    caracteristicas_condominio = (
+        [i.strip() for i in re_complex_raw.split(",") if i.strip()]
+        if re_complex_raw else []
+    )
 
     return {
-        "titulo": titulo, "preco": preco, "condominio": condominio_taxa,
-        "bairro": bairro, "cidade": cidade, "estado": estado, "cep": cep,
-        "metragem": metragem, "quartos": quartos,
-        "caracteristicas_imovel": caracteristicas_imovel,
-        "caracteristicas_condominio": caracteristicas_condominio,
-        "descricao": descricao, "url": url
+        "titulo":                  titulo,
+        "preco":                   preco,
+        "condominio":              condominio,
+        "iptu":                    valor_iptu or None,
+        "bairro":                  location.get("neighbourhood") or None,
+        "cidade":                  location.get("municipality") or None,
+        "estado":                  location.get("uf") or None,
+        "cep":                     location.get("zipcode") or None,
+        "metragem":                _extrair_valor_por_nome(properties, "size"),
+        "quartos":                 _extrair_valor_por_nome(properties, "rooms"),
+        "banheiros":               _extrair_valor_por_nome(properties, "bathrooms"),
+        "vagas":                   _extrair_valor_por_nome(properties, "garage_spaces"),
+        "caracteristicas_imovel":      caracteristicas_imovel,
+        "caracteristicas_condominio":  caracteristicas_condominio,
+        "descricao":               descricao,
+        "url":                     url,
     }
 
-async def rodar_scraper():
-    async with async_playwright() as p:
-        print("Iniciando o navegador...")
-        browser = await p.chromium.launch(headless=False)
-        context = await browser.new_context()
-        page = await context.new_page()
-        
-        url_base = "https://www.olx.com.br/imoveis/estado-pr/regiao-de-curitiba"
-        todas_urls_anuncios = set()
-        
-        print("--- ETAPA 1: Coletando URLs da listagem ---")
-        await page.goto(url_base)
-        todas_urls_anuncios.update(await extrair_links_da_pagina(page))
-        
-        dados_imoveis = []
-        
-        print("\n--- ETAPA 2: Extraindo dados profundos dos anúncios ---")
-        urls_para_visitar = list(todas_urls_anuncios)[:2]
-        
-        for i, url in enumerate(urls_para_visitar, 1):
-            print(f"[{i}/{len(urls_para_visitar)}] Extraindo dados de: {url}")
-            try:
-                dados = await extrair_dados_do_anuncio(page, url)
-                dados_imoveis.append(dados)
-                print(" -> Sucesso! Dados estruturados capturados.")
-                print(f"    Exemplo - CEP: {dados['cep']} | Itens Imóvel: {dados['caracteristicas_imovel']}")
-            except Exception as e:
-                print(f" -> Erro crítico ao extrair este anúncio: {e}")
-            
-            await page.wait_for_timeout(3000)
-            
-        print("\n=== SESSÃO DE TESTE CONCLUÍDA ===")
-        print(f"Dicionários gerados com sucesso: {len(dados_imoveis)}")
 
-        if dados_imoveis:
-            nome_arquivo = "imoveis_olx_brutos.json"
-            with open(nome_arquivo, "w", encoding="utf-8") as f:
-                json.dump(dados_imoveis, f, ensure_ascii=False, indent=4)
-            print(f"=== SUCESSO! Dados salvos em {nome_arquivo} ===")
-            print("Pronto para ser consumido pelo Pydantic!")
-        
+# ──────────────────────────────────────────────
+# ORQUESTRADOR PRINCIPAL
+# ──────────────────────────────────────────────
+
+def _salvar_json(nome_arquivo: str, dados: list) -> None:
+    with open(nome_arquivo, "w", encoding="utf-8") as f:
+        json.dump(dados, f, ensure_ascii=False, indent=4)
+    print(f"  Salvo: {nome_arquivo}  ({len(dados)} registros)")
+
+
+async def rodar_scraper() -> None:
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=False)
+        context = await browser.new_context(
+            user_agent=(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+            ),
+            viewport={"width": 1366, "height": 768},
+            locale="pt-BR",
+        )
+        await context.add_init_script(
+            "Object.defineProperty(navigator, 'webdriver', { get: () => undefined });"
+        )
+        page = await context.new_page()
+
+        # ── Etapa 1: coletar URLs ──────────────────────────────────────────────
+        url_base = "https://www.olx.com.br/imoveis/estado-pr/regiao-de-curitiba"
+        print("Coletando URLs...")
+        await page.goto(url_base)
+        todas_urls = list(set(await extrair_links_da_pagina(page)))
+        print(f"{len(todas_urls)} URLs encontradas.\n")
+
+        # ── Etapa 2: extrair dados ─────────────────────────────────────────────
+        dados_sucesso: list[dict] = []
+        dados_erros:   list[dict] = []
+
+        for i, url in enumerate(todas_urls, 1):
+            prefixo = f"[{i}/{len(todas_urls)}]"
+            try:
+                if page.is_closed():
+                    page = await context.new_page()
+
+                dados = await extrair_dados_do_anuncio(page, url)
+                dados_sucesso.append(dados)
+                print(f"{prefixo} OK  {(dados['titulo'] or url)[:70]}")
+
+            except Exception as exc:
+                tipo = type(exc).__name__
+                # primeira linha do erro (sem stack trace / call log do Playwright)
+                primeira_linha = str(exc).split("\n")[0]
+                dados_erros.append({"url": url, "erro": primeira_linha})
+                print(f"{prefixo} ERR [{tipo}] {primeira_linha[:80]}")
+
+                if page.is_closed():
+                    page = await context.new_page()
+
+            if not page.is_closed():
+                await page.wait_for_timeout(random.randint(2_000, 5_000))
+
         await browser.close()
 
+        # ── Etapa 3: limpeza e gravação ────────────────────────────────────────
+        print(f"\nSucesso: {len(dados_sucesso)}  |  Erros: {len(dados_erros)}")
+
+        if dados_sucesso:
+            _salvar_json("imoveis_sucesso.json", [_limpar_registro(d) for d in dados_sucesso])
+
+        if dados_erros:
+            _salvar_json("imoveis_erros.json", dados_erros)
+
+
 if __name__ == "__main__":
-    run_code = True
     asyncio.run(rodar_scraper())
