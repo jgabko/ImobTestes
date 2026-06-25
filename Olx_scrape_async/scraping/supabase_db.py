@@ -16,7 +16,7 @@ def get_supabase_client() -> Client:
         raise ValueError("As credenciais do Supabase não foram encontradas. Verifique o seu arquivo .env.")
     return create_client(SUPABASE_URL, SUPABASE_KEY)
 
-def salvar_no_supabase(dados: list[dict], nome_tabela: str = "imoveis"):
+def salvar_no_supabase(dados: list[dict], nome_tabela: str = "imoveis_raw"):
     """
     Recebe uma lista de dicionários e os insere diretamente na tabela do Supabase.
     """
