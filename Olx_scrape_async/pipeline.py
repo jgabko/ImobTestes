@@ -18,7 +18,7 @@ def executar_pipeline_completo():
     
     if dados_extraidos:
         # Passa os dados limpos diretamente para a função do banco
-        salvar_no_supabase(dados_extraidos, nome_tabela="imoveis")
+        salvar_no_supabase(dados_extraidos, nome_tabela="imoveis_raw")
     else:
         print("⚠️ A extração não retornou nenhum dado válido. O envio foi cancelado.")
 

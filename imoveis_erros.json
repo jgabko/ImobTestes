@@ -1,6 +1,10 @@
 [
     {
-        "url": "https://pr.olx.com.br/regiao-de-curitiba-e-paranagua/imoveis/vende-se-apartamento-2-dormitorios-com-suite-no-lindoia-1438220262",
+        "url": "https://pr.olx.com.br/regiao-de-curitiba-e-paranagua/imoveis/apartamento-capao-raso-1513551857",
+        "erro": "Page.goto: Timeout 30000ms exceeded."
+    },
+    {
+        "url": "https://pr.olx.com.br/regiao-de-londrina/imoveis/casa-com-3-dormitorios-a-venda-293-00-m-jardim-presidente-londrina-pr-1384579262",
         "erro": "Page.goto: Timeout 30000ms exceeded."
     }
 ]

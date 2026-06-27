@@ -18,7 +18,8 @@ def get_supabase_client() -> Client:
 
 def salvar_no_supabase(dados: list[dict], nome_tabela: str = "imoveis_raw"):
     """
-    Recebe uma lista de dicionários e os insere diretamente na tabela do Supabase.
+    Recebe uma lista de dicionários e realiza um UPSERT na tabela do Supabase.
+    Ignora registros que já possuam a mesma URL cadastrada (evita duplicatas).
     """
     if not dados:
         print("Aviso: Nenhum dado disponível para enviar ao Supabase.")
@@ -27,12 +28,17 @@ def salvar_no_supabase(dados: list[dict], nome_tabela: str = "imoveis_raw"):
     supabase = get_supabase_client()
     
     try:
-        print(f"\n[BANCO DE DADOS] Iniciando a inserção de {len(dados)} imóveis na tabela '{nome_tabela}'...")
+        print(f"\n[BANCO DE DADOS] Tentando inserir {len(dados)} imóveis na tabela '{nome_tabela}'...")
         
-        # O Supabase permite a inserção direta de uma lista de dicionários (bulk insert)
-        resposta = supabase.table(nome_tabela).insert(dados).execute()
+        # O método UPSERT verifica a coluna 'url'. 
+        # Se a url já existir, 'ignore_duplicates=True' faz ele pular e não dar erro.
+        resposta = supabase.table(nome_tabela).upsert(
+            dados, 
+            on_conflict="url", 
+            ignore_duplicates=True
+        ).execute()
         
-        print(f"✅ Sucesso! {len(resposta.data)} registros inseridos no Supabase.")
+        print(f"✅ Processamento concluído! Registros novos salvos no banco. (Duplicatas ignoradas).")
         return resposta.data
         
     except Exception as e:
