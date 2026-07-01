@@ -14,6 +14,7 @@ features_categoricas = df['bairro']
 
 
 
+
 #stephanafk e vitti
 
 

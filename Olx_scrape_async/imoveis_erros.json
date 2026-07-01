@@ -1,0 +1,18 @@
+[
+    {
+        "url": "https://pr.olx.com.br/regiao-de-curitiba-e-paranagua/imoveis/apartamento-a-venda-no-batel-1513121548",
+        "erro": "Page.goto: Timeout 30000ms exceeded."
+    },
+    {
+        "url": "https://pr.olx.com.br/regiao-de-curitiba-e-paranagua/imoveis/apartamento-a-venda-no-portao-1508998717",
+        "erro": "Page.goto: Timeout 30000ms exceeded."
+    },
+    {
+        "url": "https://pr.olx.com.br/regiao-de-curitiba-e-paranagua/imoveis/apartamento-para-locacao-em-sao-jose-dos-pinhais-1511724866",
+        "erro": "Page.goto: Timeout 30000ms exceeded."
+    },
+    {
+        "url": "https://pr.olx.com.br/regiao-de-curitiba-e-paranagua/imoveis/apartamento-com-2-quartos-para-locacao-no-capao-raso-1511724864",
+        "erro": "Page.goto: Timeout 30000ms exceeded."
+    }
+]

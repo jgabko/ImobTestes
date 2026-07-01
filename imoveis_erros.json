@@ -1,10 +1,18 @@
 [
     {
-        "url": "https://pr.olx.com.br/regiao-de-curitiba-e-paranagua/imoveis/apartamento-capao-raso-1513551857",
+        "url": "https://pr.olx.com.br/regiao-de-londrina/imoveis/casa-venda-no-residencial-interlagos-em-apucarana-1492187689",
         "erro": "Page.goto: Timeout 30000ms exceeded."
     },
     {
-        "url": "https://pr.olx.com.br/regiao-de-londrina/imoveis/casa-com-3-dormitorios-a-venda-293-00-m-jardim-presidente-londrina-pr-1384579262",
+        "url": "https://pr.olx.com.br/regiao-de-londrina/imoveis/quitinete-1512450797",
+        "erro": "Page.goto: Timeout 30000ms exceeded."
+    },
+    {
+        "url": "https://pr.olx.com.br/regiao-de-londrina/imoveis/casa-a-venda-no-jardim-alvorada-regiao-oeste-de-londrina-pr-1384579565",
+        "erro": "Page.goto: Timeout 30000ms exceeded."
+    },
+    {
+        "url": "https://pr.olx.com.br/regiao-de-londrina/imoveis/apartamento-a-venda-no-lagoa-bonita-acquaville-regiao-leste-de-londrina-pr-1447088473",
         "erro": "Page.goto: Timeout 30000ms exceeded."
     }
 ]

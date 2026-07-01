@@ -3,17 +3,15 @@ import numpy as np
 import ast
 import re
 import joblib
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import train_test_split, RandomizedSearchCV
 from sklearn.pipeline import Pipeline
 from sklearn.compose import ColumnTransformer
 from sklearn.preprocessing import StandardScaler, OneHotEncoder, MultiLabelBinarizer
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
-from xgboost import XGBRegressor
-from lightgbm import LGBMRegressor
 
 # ==========================================
-# 1. Carregar e Limpar os Dados
+# 1. Carregamento e Limpeza
 # ==========================================
 print("Carregando os dados...")
 df = pd.read_csv('/home/JGMK/Documents/ImobTestes/ML_IMOB_CWB/imoveis_limpos.csv')
@@ -33,7 +31,7 @@ df_filtrado = df[
 ].copy()
 
 # ==========================================
-# 2. Engenharia de Features (Listas para Colunas)
+# 2. Engenharia de Features Textuais
 # ==========================================
 print("Processando características textuais...")
 def converter_para_lista(texto):
@@ -59,18 +57,14 @@ condo_dummies = pd.DataFrame(
 )
 
 df_final = pd.concat([df_filtrado, imovel_dummies, condo_dummies], axis=1)
-
-# Limpeza de nomes das colunas (XGBoost e LightGBM não aceitam caracteres especiais como [ ou <)
 df_final.columns = [re.sub(r'[\[\]<>{}]', '', str(col)) for col in df_final.columns]
 
 # ==========================================
-# 3. Preparação para o Treinamento
+# 3. Preparação das Variáveis
 # ==========================================
 features_numericas = ['condominio', 'iptu', 'metragem', 'quartos', 'banheiros', 'vagas']
 features_categoricas = ['bairro']
-features_binarias = list(imovel_dummies.columns) + list(condo_dummies.columns)
-# Garantir que as binárias também não tenham caracteres especiais nos nomes
-features_binarias = [re.sub(r'[\[\]<>{}]', '', str(col)) for col in features_binarias]
+features_binarias = [re.sub(r'[\[\]<>{}]', '', str(col)) for col in list(imovel_dummies.columns) + list(condo_dummies.columns)]
 
 X = df_final[features_numericas + features_categoricas + features_binarias]
 y = df_final['preco']
@@ -86,69 +80,64 @@ preprocessor = ColumnTransformer(
 )
 
 # ==========================================
-# 4. Competição de Modelos (Random Forest vs XGBoost vs LightGBM)
+# 4. O Campeonato (Hyperparameter Tuning)
 # ==========================================
-modelos = {
-    'Random Forest': RandomForestRegressor(n_estimators=100, random_state=42, n_jobs=-1),
-    'XGBoost': XGBRegressor(n_estimators=100, learning_rate=0.1, random_state=42, n_jobs=-1),
-    'LightGBM': LGBMRegressor(n_estimators=100, learning_rate=0.1, random_state=42, n_jobs=-1, verbose=-1)
+pipeline = Pipeline(steps=[
+    ('preprocessor', preprocessor),
+    ('regressor', RandomForestRegressor(random_state=42))
+])
+
+# Aqui definimos as opções que o algoritmo vai testar
+parametros_busca = {
+    'regressor__n_estimators': [100, 200, 300, 400],           # Quantidade de árvores
+    'regressor__max_depth': [None, 10, 20, 30],                # Profundidade das árvores
+    'regressor__min_samples_split': [2, 5, 10],                # Mínimo de amostras para dividir um nó
+    'regressor__min_samples_leaf': [1, 2, 4],                  # Mínimo de amostras na folha final
+    'regressor__max_features': ['sqrt', 'log2', 1.0]           # Quantidade de features avaliadas por vez
 }
 
-resultados = {}
-melhor_modelo_nome = None
-melhor_r2 = -float('inf')
-melhor_pipeline = None
+print("\nIniciando a busca pela melhor configuração (Isso pode demorar alguns minutos)...")
+# O n_iter=20 significa que ele vai sortear 20 combinações diferentes do dicionário acima
+busca_aleatoria = RandomizedSearchCV(
+    estimator=pipeline,
+    param_distributions=parametros_busca,
+    n_iter=20,
+    cv=5,                                  # Validação cruzada em 5 fatias (5 folds)
+    scoring='neg_mean_absolute_error',     # O objetivo do campeonato é o menor MAE
+    random_state=42,
+    n_jobs=-1,                             # Usa todos os núcleos do seu processador
+    verbose=2                              # Mostra o progresso na tela
+)
 
-print("\n=== INICIANDO TREINAMENTO E COMPARAÇÃO ===")
-for nome, algoritmo in modelos.items():
-    print(f"Treinando {nome}...")
-    pipeline = Pipeline(steps=[
-        ('preprocessor', preprocessor),
-        ('regressor', algoritmo)
-    ])
-    
-    pipeline.fit(X_train, y_train)
-    y_pred = pipeline.predict(X_test)
-    
-    r2 = r2_score(y_test, y_pred)
-    mae = mean_absolute_error(y_test, y_pred)
-    rmse = np.sqrt(mean_squared_error(y_test, y_pred))
-    
-    resultados[nome] = {'R2': r2, 'MAE': mae, 'RMSE': rmse}
-    
-    # Atualizar o melhor modelo
-    if r2 > melhor_r2:
-        melhor_r2 = r2
-        melhor_modelo_nome = nome
-        melhor_pipeline = pipeline
+busca_aleatoria.fit(X_train, y_train)
 
 # ==========================================
-# 5. Exibição dos Resultados
+# 5. Avaliação do Campeão
 # ==========================================
-print("\n=== PLACAR FINAL ===")
-for nome, metricas in resultados.items():
-    print(f"{nome}:")
-    print(f"  -> R²:   {metricas['R2']:.4f}")
-    print(f"  -> MAE:  R$ {metricas['MAE']:,.2f}")
-    print(f"  -> RMSE: R$ {metricas['RMSE']:,.2f}\n")
+melhor_modelo = busca_aleatoria.best_estimator_
 
-print(f"🏆 O Vencedor foi: {melhor_modelo_nome} com um R² de {melhor_r2:.4f}!")
+print("\n=== TREINAMENTO CONCLUÍDO ===")
+print("Melhores parâmetros encontrados:")
+for param, valor in busca_aleatoria.best_params_.items():
+    print(f" -> {param}: {valor}")
 
-# ==========================================
-# 6. Salvando o Melhor Modelo (Item 3)
-# ==========================================
-arquivo_modelo = 'melhor_modelo_precificacao.pkl'
-joblib.dump(melhor_pipeline, arquivo_modelo)
-print(f"\n✅ Modelo {melhor_modelo_nome} salvo com sucesso no arquivo '{arquivo_modelo}'!")
+print("\nAvaliando desempenho nos dados de teste...")
+y_pred = melhor_modelo.predict(X_test)
 
-# ==========================================
-# BÔNUS: Como carregar e usar o modelo salvo futuramente
-# ==========================================
-print("\n(Teste rápido de carregamento do arquivo salvo...)")
-modelo_carregado = joblib.load(arquivo_modelo)
-exemplo = X_test.head(1)
-preco_real = y_test.head(1).values[0]
-preco_previsto = modelo_carregado.predict(exemplo)[0]
+mae = mean_absolute_error(y_test, y_pred)
+rmse = np.sqrt(mean_squared_error(y_test, y_pred))
+r2 = r2_score(y_test, y_pred)
 
-print(f"Bairro: {exemplo['bairro'].values[0]} | Metragem: {exemplo['metragem'].values[0]}m²")
-print(f"Preço Real: R$ {preco_real:,.2f} | Previsto pelo arquivo salvo: R$ {preco_previsto:,.2f}")
+print("\n=== RESULTADOS FINAIS DO MODELO TUNADO ===")
+print(f"R² (Score de explicação): {r2:.4f}")
+print(f"Erro Médio Absoluto (MAE): R$ {mae:,.2f}")
+print(f"Raiz do Erro Quadrático Médio (RMSE): R$ {rmse:,.2f}")
+
+# Salvando o modelo definitivo
+if mae < 80000:
+    print(f"\n✅ META ALCANÇADA! Reduzimos o erro para menos de 80 mil.")
+else:
+    print(f"\n⚠️ Chegamos no limite matemático dos dados disponíveis. O MAE estabilizou em R$ {mae:,.2f}.")
+
+joblib.dump(melhor_modelo, 'rf_modelo_definitivo.pkl')
+print("Modelo salvo com sucesso no arquivo 'rf_modelo_definitivo.pkl'!")
